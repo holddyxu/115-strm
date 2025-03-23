@@ -1,4 +1,8 @@
 # 115网盘.strm生成脚本优化说明
+## 运行优化版脚本
+```bash 
+sudo bash -c "$(curl -fsSL https://hub.diaoda.de/https://raw.githubusercontent.com/holddyxu/115-strm/refs/heads/main/115-strm.sh)"
+```
 
 ## 目录
 1. [主要优化点](#主要优化点)
