@@ -6,23 +6,26 @@ export LC_ALL=en_US.UTF-8
 # 配置文件路径，改用$HOME来确保路径正确解析
 config_file="$HOME/.115-strm.conf"
 
-# 读取配置文件函数
+# 初始化配置变量
+declare -g selected_extensions=()  # 新增：存储用户选择的扩展名
+
+# 读取配置函数（新增格式相关变量）
 read_config() {
     if [ -f "$config_file" ]; then
         # shellcheck source=/dev/null
         . "$config_file"
     fi
-    update_existing="${update_existing:-1}" # 默认值为 1（跳过）
-    delete_absent="${delete_absent:-2}"     # 默认值为 2（不删除）
+    update_existing="${update_existing:-1}"
+    delete_absent="${delete_absent:-2}"    
     last_strm_directory="${last_strm_directory:-}"
     last_interval_time="${last_interval_time:-3}"
     last_user_formats="${last_user_formats:-}"
-    exclude_option="${exclude_option:-2}"   # 确保 exclude_option 有默认值
+    exclude_option="${exclude_option:-2}"
+    # 新增格式缓存
+    last_selected_formats="${last_selected_formats:-1 2 3 4}"
 }
 
-
-
-# 保存配置文件函数
+# 保存配置（新增格式缓存）
 save_config() {
     cat <<EOF >"$config_file"
 directory_tree_file="$directory_tree_file"
@@ -36,186 +39,63 @@ delete_absent="$delete_absent"
 last_strm_directory="$last_strm_directory"
 last_interval_time="$last_interval_time"
 last_user_formats="$last_user_formats"
+last_selected_formats="${last_selected_formats:-1 2 3 4}"  # 新增
 EOF
 }
 
+# 新增：格式选择函数
+select_formats() {
+    builtin_audio_extensions=("mp3" "flac" "wav" "aac" "ogg" "wma" "alac" "m4a" "aiff" "ape" "dsf" "dff" "wv" "pcm" "tta")
+    builtin_video_extensions=("mp4" "mkv" "avi" "mov" "wmv" "flv" "webm" "vob" "mpg" "mpeg")
+    builtin_image_extensions=("jpg" "jpeg" "png" "gif" "bmp" "tiff" "svg" "heic")
+    builtin_other_extensions=("iso" "img" "bin" "nrg" "cue" "dvd" "lrc" "srt" "sub" "ssa" "ass" "vtt" "txt" "pdf" "doc" "docx" "csv" "xml" "new")
 
-# 检查是否安装了所需软件包或工具，若未安装则提示用户并退出
-if ! command -v python3 &>/dev/null; then
-    echo "Python 3 未安装，请安装后再运行此脚本。"
-    exit 1
-fi
+    echo "▂▄▆█ 格式选择（建议全选以提升速度）█▆▄▂"
+    echo "请选择要包含的文件格式分类（多个用空格分隔）："
+    echo "1. 音频[${#builtin_audio_extensions[@]}种]  2. 视频[${#builtin_video_extensions[@]}种]"
+    echo "3. 图片[${#builtin_image_extensions[@]}种]  4. 其他[${#builtin_other_extensions[@]}种]"
+    echo "5. 全选（默认）  0. 自定义扩展名"
+    echo "上次选择：[${last_selected_formats}] 直接回车使用上次配置"
 
-# 检查是否安装了 iconv
-if ! command -v iconv &>/dev/null; then
-    echo "iconv 未安装，请安装后再运行此脚本。"
-    exit 1
-fi
+    read -r -a selected_categories
+    selected_categories=("${selected_categories[@]}")
 
-# 检查是否安装了 sqlite3
-if ! command -v sqlite3 &>/dev/null; then
-    echo "sqlite3 未安装，请安装后再运行此脚本。"
-    exit 1
-fi
-
-# 检查是否安装了 curl
-if ! command -v curl &>/dev/null; then
-    echo "curl 未安装，请安装后再运行此脚本。"
-    exit 1
-fi
-
-# 初始化配置
-read_config
-
-show_menu() {
-    echo "请选择操作："
-    echo "1: 将目录树转换为目录文件"
-    echo "2: 生成 .strm 文件"
-    echo "3: 建立 alist 索引数据库"
-    echo "4: 创建自动更新脚本"
-    echo "5: 高级配置（处理非常见媒体文件时使用）"
-    echo "6: 扫描并下载指定格式文件"
-    echo "7: 其他功能"
-    echo "0: 退出"
-}
-
-# 其他功能菜单
-other_functions_menu() {
-    echo "其他功能："
-    echo "1: 去除文件格式，如果有字幕建议提前下载好，比如xx.mp4.strm，去除后为xx.strm"
-    echo "0: 返回主菜单"
-}
-
-
-
-# 初始化全局变量，存储生成的目录文件路径和自定义扩展名
-generated_directory_file="${generated_directory_file:-}"
-custom_extensions="${custom_extensions:-}"
-
-# 定义内置的媒体文件扩展名
-builtin_audio_extensions=("mp3" "flac" "wav" "aac" "ogg" "wma" "alac" "m4a" "aiff" "ape" "dsf" "dff" "wv" "pcm" "tta")
-builtin_video_extensions=("mp4" "mkv" "avi" "mov" "wmv" "flv" "webm" "vob" "mpg" "mpeg")
-builtin_image_extensions=("jpg" "jpeg" "png" "gif" "bmp" "tiff" "svg" "heic")
-builtin_other_extensions=("iso" "img" "bin" "nrg" "cue" "dvd" "lrc" "srt" "sub" "ssa" "ass" "vtt" "txt" "pdf" "doc" "docx" "csv" "xml" "new")
-
-# 将目录树文件转换为目录文件的函数
-convert_directory_tree() {
-    if [ -n "$directory_tree_file" ]; then
-        echo "请输入目录树文件的路径或者下载链接，上次配置:${directory_tree_file}，回车确认："
-    else
-        echo "请输入目录树文件的路径或者下载链接，路径示例：/path/to/alist20250101000000_目录树.txt，回车确认："
-    fi
-    read -r input_directory_tree_file
-    directory_tree_file="${input_directory_tree_file:-$directory_tree_file}"
-
-    if [[ $directory_tree_file == http* ]]; then
-        url="$directory_tree_file"
-
-        filename=$(basename "$url")
-        decoded_filename=$(python3 -c "import urllib.parse; print(urllib.parse.unquote('$filename'))")
-
-        # 下载文件
-        curl -L -o "$filename" "$url"
-
-        # 重命名文件
-        mv "$filename" "$decoded_filename"
-
-        # 更新 directory_tree_file 为新下载文件的完整路径
-        directory_tree_file="$PWD/$decoded_filename"
-
-        # 保存配置以记录新路径
-        save_config
+    # 处理默认值
+    if [[ ${#selected_categories[@]} -eq 0 ]]; then
+        selected_categories=($last_selected_formats)
     fi
 
-    if [ ! -f "$directory_tree_file" ]; then
-        echo "目录树文件不存在，请提供有效的文件路径。"
-        return
+    # 处理全选逻辑
+    if [[ " ${selected_categories[@]} " =~ 5 ]]; then
+        selected_categories=(1 2 3 4)
     fi
 
-    # 获取目录树文件的目录和文件名
-    directory_tree_dir=$(dirname "$directory_tree_file")
-    directory_tree_base=$(basename "$directory_tree_file")
+    # 构建扩展名集合
+    selected_extensions=()
+    [[ " ${selected_categories[@]} " =~ 1 ]] && selected_extensions+=("${builtin_audio_extensions[@]}")
+    [[ " ${selected_categories[@]} " =~ 2 ]] && selected_extensions+=("${builtin_video_extensions[@]}")
+    [[ " ${selected_categories[@]} " =~ 3 ]] && selected_extensions+=("${builtin_image_extensions[@]}")
+    [[ " ${selected_categories[@]} " =~ 4 ]] && selected_extensions+=("${builtin_other_extensions[@]}")
 
-    # 转换目录树文件为 UTF-8 格式，以便处理（如有需要）
-    converted_file="$directory_tree_dir/$directory_tree_base.converted"
-    iconv -f utf-16le -t utf-8 "$directory_tree_file" >"$converted_file"
+    # 处理自定义扩展名
+    if [[ " ${selected_categories[@]} " =~ 0 ]]; then
+        read -p "请输入自定义扩展名（空格分隔）：" -r -a custom_input
+        selected_extensions+=("${custom_input[@]}")
+    fi
 
-    # 生成的目录文件路径
-    generated_directory_file="${converted_file}_目录文件.txt"
-
-    # 使用 Python 解析目录树
-    python3 - <<EOF
-import os
-
-def parse_directory_tree(file_path):
-    current_path_stack = []
-    directory_list_file = "${generated_directory_file}"
-
-    # 打开输入文件和输出文件
-    with open(file_path, 'r', encoding='utf-8') as file, \
-         open(directory_list_file, 'w', encoding='utf-8') as output_file:
-        for line in file:
-            # 移除 BOM 和多余空白
-            line = line.lstrip('\ufeff').rstrip()
-            line_depth = line.count('|')  # 计算目录级别
-            item_name = line.split('|-')[-1].strip()  # 获取当前项名称
-            if not item_name:
-                continue
-            while len(current_path_stack) > line_depth:
-                current_path_stack.pop()  # 移出多余的路径层级
-            if len(current_path_stack) == line_depth:
-                if current_path_stack:
-                    current_path_stack.pop()
-            current_path_stack.append(item_name)  # 添加当前项到路径栈
-            full_path = '/' + '/'.join(current_path_stack)  # 构建完整路径
-            output_file.write(full_path + '\n')  # 写入输出文件
-
-parse_directory_tree("$converted_file")
-EOF
-    # 使用 sed 在 bash 中处理生成文件，替换每行开头的 "/|——" 为 "/"
-    sed -i 's/^.\{4\}/\//' "${converted_file}_目录文件.txt"
-
-    # 清理临时转换文件
-    rm "$converted_file"
-    echo "目录文件已生成：$generated_directory_file"
-
-    # 保存配置
+    # 去重并转换为小写
+    selected_extensions=($(echo "${selected_extensions[@]}" | tr '[:upper:]' '[:lower:]' | tr ' ' '\n' | sort -u | xargs))
+    last_selected_formats="${selected_categories[@]}"
+    
+    echo "已选择格式：${selected_extensions[*]}"
     save_config
 }
 
-# 自动查找可能的目录文件
-find_possible_directory_file() {
-    # 扫描当前目录中以 "_目录文件.txt" 结尾的文件
-    possible_files=($(ls *_目录文件.txt 2>/dev/null | sort -V))
-
-    if [ ${#possible_files[@]} -eq 0 ]; then
-        echo "没有找到符合条件的目录文件。"
-        return 1
-    fi
-
-    # 提供选择已找到的目录文件或输入完整路径
-    echo "找到以下目录文件，请选择："
-    select file in "${possible_files[@]}" "输入完整路径"; do
-        case $file in
-        "输入完整路径")
-            echo "请输入目录文件的完整路径："
-            read -r generated_directory_file
-            if [ ! -f "$generated_directory_file" ]; then
-                echo "文件不存在，请重新输入。"
-                return 1
-            fi
-            break
-            ;;
-        *)
-            generated_directory_file=$file
-            break
-            ;;
-        esac
-    done
-}
-
-# 生成 .strm 文件的函数
+# 生成.strm文件函数（优化版）
 generate_strm_files() {
+    # 第一步：选择格式
+    select_formats  # 新增格式选择
+    
     # 检查是否已有生成的目录文件
     if [ -z "$generated_directory_file" ]; then
         if ! find_possible_directory_file; then
@@ -301,38 +181,6 @@ generate_strm_files() {
     # 获取现有的 .strm 文件目录结构并存入临时文件
     find "$strm_save_path" -type f -name "*.strm" >"$temp_existing_structure"
 
-    # 提示用户选择要包含的文件格式分类
-    echo "请选择要包含的文件格式分类（多个选项用空格分隔，5为全选，默认5）："
-    echo "1: 音频格式（${builtin_audio_extensions[*]}）"
-    echo "2: 视频格式（${builtin_video_extensions[*]}）"
-    echo "3: 图片格式（${builtin_image_extensions[*]}）"
-    echo "4: 其他格式（${builtin_other_extensions[*]}）"
-    echo "5: 全选（默认）"
-    read -r -a selected_categories
-
-    # 处理默认选项
-    if [[ ${#selected_categories[@]} -eq 0 ]] || [[ " ${selected_categories[@]} " =~ "5" ]]; then
-        selected_categories=(1 2 3 4)
-    fi
-
-    # 根据用户选择构建扩展名数组
-    selected_extensions=()
-    if [[ " ${selected_categories[@]} " =~ "1" ]]; then
-        selected_extensions+=("${builtin_audio_extensions[@]}")
-    fi
-    if [[ " ${selected_categories[@]} " =~ "2" ]]; then
-        selected_extensions+=("${builtin_video_extensions[@]}")
-    fi
-    if [[ " ${selected_categories[@]} " =~ "3" ]]; then
-        selected_extensions+=("${builtin_image_extensions[@]}")
-    fi
-    if [[ " ${selected_categories[@]} " =~ "4" ]]; then
-        selected_extensions+=("${builtin_other_extensions[@]}")
-    fi
-
-    # 转换为Python列表格式
-    py_selected_extensions=$(printf "\"%s\"," "${selected_extensions[@]}" | sed 's/,$//')
-
     # 使用 Python 生成 .strm 文件并处理多线程与进度显示
     python3 - <<EOF
 import os
@@ -344,8 +192,8 @@ import threading
 update_existing = $update_existing
 delete_absent = $delete_absent
 
-# 设置用户选择的扩展名
-media_extensions = set([$py_selected_extensions])
+# 新增：使用Bash传递的格式列表
+media_extensions = set(${selected_extensions[@]})
 custom_extensions = set("${custom_extensions}".split())
 media_extensions.update(custom_extensions)
 
@@ -385,16 +233,23 @@ def list_existing_files():
         f.writelines(f"{line}\n" for line in existing_files)
 
 # 处理生成目录结构
+# 修改目录处理逻辑
 def process_directory_structure():
-    with open(generated_directory_file, 'r', encoding='utf-8') as file, open(temp_new_structure, 'w', encoding='utf-8') as new_structure_file:
+    with open("$converted_file", 'r', encoding='utf-8') as file, \
+         open("$generated_directory_file", 'w', encoding='utf-8') as output:
+         
         for line in file:
-            line = line.strip()
-            if line.count('/') < exclude_option + 1:
+            path = line.strip()
+            if '.' not in path:
                 continue
-
-            adjusted_path = '/'.join(line.split('/')[exclude_option + 1:])
-            if adjusted_path.split('.')[-1].lower() in media_extensions:
-                new_structure_file.write(adjusted_path + '\n')
+                
+            ext = path.split('.')[-1].lower()
+            if ext not in media_extensions:
+                continue  # 提前过滤
+                
+            # 原有处理逻辑
+            adjusted_path = '/'.join(path.split('/')[${exclude_option}+1:])
+            output.write(adjusted_path + '\n')
 
 # 根据文件列表创建或更新 .strm 文件
 def create_strm_files():
