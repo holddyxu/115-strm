@@ -301,6 +301,38 @@ generate_strm_files() {
     # 获取现有的 .strm 文件目录结构并存入临时文件
     find "$strm_save_path" -type f -name "*.strm" >"$temp_existing_structure"
 
+    # 提示用户选择要包含的文件格式分类
+    echo "请选择要包含的文件格式分类（多个选项用空格分隔，5为全选，默认5）："
+    echo "1: 音频格式（${builtin_audio_extensions[*]}）"
+    echo "2: 视频格式（${builtin_video_extensions[*]}）"
+    echo "3: 图片格式（${builtin_image_extensions[*]}）"
+    echo "4: 其他格式（${builtin_other_extensions[*]}）"
+    echo "5: 全选（默认）"
+    read -r -a selected_categories
+
+    # 处理默认选项
+    if [[ ${#selected_categories[@]} -eq 0 ]] || [[ " ${selected_categories[@]} " =~ "5" ]]; then
+        selected_categories=(1 2 3 4)
+    fi
+
+    # 根据用户选择构建扩展名数组
+    selected_extensions=()
+    if [[ " ${selected_categories[@]} " =~ "1" ]]; then
+        selected_extensions+=("${builtin_audio_extensions[@]}")
+    fi
+    if [[ " ${selected_categories[@]} " =~ "2" ]]; then
+        selected_extensions+=("${builtin_video_extensions[@]}")
+    fi
+    if [[ " ${selected_categories[@]} " =~ "3" ]]; then
+        selected_extensions+=("${builtin_image_extensions[@]}")
+    fi
+    if [[ " ${selected_categories[@]} " =~ "4" ]]; then
+        selected_extensions+=("${builtin_other_extensions[@]}")
+    fi
+
+    # 转换为Python列表格式
+    py_selected_extensions=$(printf "\"%s\"," "${selected_extensions[@]}" | sed 's/,$//')
+
     # 使用 Python 生成 .strm 文件并处理多线程与进度显示
     python3 - <<EOF
 import os
@@ -312,6 +344,10 @@ import threading
 update_existing = $update_existing
 delete_absent = $delete_absent
 
+# 设置用户选择的扩展名
+media_extensions = set([$py_selected_extensions])
+custom_extensions = set("${custom_extensions}".split())
+media_extensions.update(custom_extensions)
 
 # 定义常见的媒体文件扩展名，并合并用户自定义扩展名
 media_extensions = set([
