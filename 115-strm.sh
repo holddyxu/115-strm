@@ -1,4 +1,93 @@
 #!/bin/bash
+################# TG BOT 配置加载开始 #################
+# 1. 定义配置文件路径 (默认在脚本同级目录下查找 bot.conf)
+CONF_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bot.conf"
+
+# 2. 加载配置
+if [ -f "$CONF_FILE" ]; then
+    source "$CONF_FILE"
+else
+    echo "⚠️ 未找到配置文件: $CONF_FILE，将无法发送 TG 通知"
+fi
+
+# 3. 定义发送消息的函数
+send_tg_msg() {
+    local msg="$1"
+    # 只有当 Token 和 ChatID 都有值时才发送
+    if [[ -n "$TG_BOT_TOKEN" && -n "$TG_CHAT_ID" ]]; then
+        # 获取当前时间
+        local time_now=$(date "+%Y-%m-%d %H:%M:%S")
+        local full_msg="${TG_MSG_PREFIX} ${time_now}%0A${msg}"
+        
+        # 发送请求 (使用 curl，静默模式，超时时间 10 秒)
+        curl -s -o /dev/null --max-time 10 -X POST \
+            "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TG_CHAT_ID}" \
+            -d text="${full_msg}" \
+            -d parse_mode="HTML"
+    fi
+}
+################# TG BOT 配置加载结束 #################
+
+################# 非交互模式支持开始 #################
+# 运行模式标志
+INTERACTIVE_MODE=true
+TG_MODE=false
+ACTION=""
+
+# 解析命令行参数
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --tg-mode)
+            TG_MODE=true
+            INTERACTIVE_MODE=false
+            shift
+            ;;
+        --action)
+            ACTION="$2"
+            shift 2
+            ;;
+        --param-*)
+            # 动态参数处理，将 --param-xxx 转换为 PARAM_xxx 变量
+            param_name="${1#--param-}"
+            declare "PARAM_${param_name}=$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+# 输出函数（根据模式选择输出方式）
+output_msg() {
+    local msg="$1"
+    if [[ "$TG_MODE" == "true" ]]; then
+        echo "$msg"  # 输出到 stdout，由调用方捕获
+    else
+        echo "$msg"
+    fi
+}
+
+# 获取输入函数（非交互模式从参数获取）
+get_input() {
+    local prompt="$1"
+    local default="$2"
+    local param_name="$3"
+    
+    if [[ "$INTERACTIVE_MODE" == "true" ]]; then
+        echo "$prompt"
+        read -r input
+        echo "${input:-$default}"
+    else
+        # 非交互模式，从 PARAM_xxx 变量获取
+        local var_name="PARAM_${param_name}"
+        local value="${!var_name}"
+        echo "${value:-$default}"
+    fi
+}
+################# 非交互模式支持结束 #################
+
 # 设置 UTF-8 环境，确保字符编码一致
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
@@ -26,19 +115,28 @@ read_config() {
 
 # 新增格式选择函数
 select_formats() {
-    echo "▂▄▆█ 格式选择（可提升处理速度）█▆▄▂"
-    echo "请选择要包含的文件格式分类（多个用空格分隔）："
-    echo "1. 音频[${#builtin_audio_extensions[@]}种]  2. 视频[${#builtin_video_extensions[@]}种]"
-    echo "3. 图片[${#builtin_image_extensions[@]}种]  4. 其他[${#builtin_other_extensions[@]}种]"
-    echo "5. 全选（默认）  0. 自定义扩展名"
-    echo "上次选择：[${last_selected_formats}] 直接回车使用上次配置"
+    # 非交互模式：从参数获取格式
+    if [[ "$INTERACTIVE_MODE" == "false" ]]; then
+        if [[ -n "$PARAM_formats" ]]; then
+            selected_categories=($PARAM_formats)
+        else
+            selected_categories=(1 2 3 4)  # 默认全选
+        fi
+    else
+        echo "▂▄▆█ 格式选择（可提升处理速度）█▆▄▂"
+        echo "请选择要包含的文件格式分类（多个用空格分隔）："
+        echo "1. 音频[${#builtin_audio_extensions[@]}种]  2. 视频[${#builtin_video_extensions[@]}种]"
+        echo "3. 图片[${#builtin_image_extensions[@]}种]  4. 其他[${#builtin_other_extensions[@]}种]"
+        echo "5. 全选（默认）  0. 自定义扩展名"
+        echo "上次选择：[${last_selected_formats}] 直接回车使用上次配置"
 
-    read -r -a selected_categories
-    selected_categories=("${selected_categories[@]}")
+        read -r -a selected_categories
+        selected_categories=("${selected_categories[@]}")
 
-    # 处理默认值
-    if [[ ${#selected_categories[@]} -eq 0 ]]; then
-        selected_categories=($last_selected_formats)
+        # 处理默认值
+        if [[ ${#selected_categories[@]} -eq 0 ]]; then
+            selected_categories=($last_selected_formats)
+        fi
     fi
 
     # 处理全选逻辑
@@ -53,8 +151,8 @@ select_formats() {
     [[ " ${selected_categories[@]} " =~ 3 ]] && selected_extensions+=("${builtin_image_extensions[@]}")
     [[ " ${selected_categories[@]} " =~ 4 ]] && selected_extensions+=("${builtin_other_extensions[@]}")
 
-    # 处理自定义扩展名
-    if [[ " ${selected_categories[@]} " =~ 0 ]]; then
+    # 处理自定义扩展名（仅交互模式）
+    if [[ "$INTERACTIVE_MODE" == "true" && " ${selected_categories[@]} " =~ 0 ]]; then
         read -p "请输入自定义扩展名（空格分隔）：" -r -a custom_input
         selected_extensions+=("${custom_input[@]}")
     fi
@@ -63,7 +161,7 @@ select_formats() {
     selected_extensions=($(echo "${selected_extensions[@]}" | tr '[:upper:]' '[:lower:]' | tr ' ' '\n' | sort -u | xargs))
     last_selected_formats="${selected_categories[*]}"
     
-    echo "已选择格式：${selected_extensions[*]}"
+    output_msg "已选择格式：${selected_extensions[*]}"
     save_config
 }
 
@@ -81,6 +179,7 @@ delete_absent="$delete_absent"
 last_strm_directory="$last_strm_directory"
 last_interval_time="$last_interval_time"
 last_user_formats="$last_user_formats"
+db_file="$db_file"
 EOF
 }
 
@@ -145,28 +244,50 @@ builtin_other_extensions=("iso" "img" "bin" "nrg" "cue" "dvd" "lrc" "srt" "sub" 
 
 # 将目录树文件转换为目录文件的函数
 convert_directory_tree() {
-    if [ -n "$directory_tree_file" ]; then
-        echo "请输入目录树文件的路径或者下载链接，上次配置:${directory_tree_file}，回车确认："
+    # 非交互模式：从参数获取
+    if [[ "$INTERACTIVE_MODE" == "false" ]]; then
+        input_directory_tree_file="$PARAM_directory_tree_file"
     else
-        echo "请输入目录树文件的路径或者下载链接，路径示例：/path/to/alist20250101000000_目录树.txt，回车确认："
+        if [ -n "$directory_tree_file" ]; then
+            echo "请输入目录树文件的路径或者下载链接，上次配置:${directory_tree_file}，回车确认："
+        else
+            echo "请输入目录树文件的路径或者下载链接，路径示例：/path/to/alist20250101000000_目录树.txt，回车确认："
+        fi
+        read -r input_directory_tree_file
     fi
-    read -r input_directory_tree_file
     directory_tree_file="${input_directory_tree_file:-$directory_tree_file}"
 
     if [[ $directory_tree_file == http* ]]; then
         url="$directory_tree_file"
-
-        filename=$(basename "$url")
+        
+        # 获取脚本所在目录
+        script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        
+        # 解码 URL 中的文件名
+        url_path="${url%%\?*}"  # 移除查询参数
+        filename=$(basename "$url_path")
         decoded_filename=$(python3 -c "import urllib.parse; print(urllib.parse.unquote('$filename'))")
-
-        # 下载文件
-        curl -L -o "$filename" "$url"
-
-        # 重命名文件
-        mv "$filename" "$decoded_filename"
-
-        # 更新 directory_tree_file 为新下载文件的完整路径
-        directory_tree_file="$PWD/$decoded_filename"
+        
+        # 检查文件名是否包含"目录树"
+        if [[ "$decoded_filename" == *"目录树"* ]]; then
+            # 统一保存为"目录树.txt"，覆盖旧文件
+            target_file="$script_dir/目录树.txt"
+            output_msg "检测到目录树文件，正在下载到：$target_file"
+            curl -L -o "$target_file" "$url"
+            
+            if [[ $? -eq 0 ]]; then
+                output_msg "✅ 目录树文件下载完成"
+                directory_tree_file="$target_file"
+            else
+                output_msg "❌ 下载失败"
+                return 1
+            fi
+        else
+            # 原有逻辑：下载并重命名
+            curl -L -o "$filename" "$url"
+            mv "$filename" "$decoded_filename" 2>/dev/null
+            directory_tree_file="$PWD/$decoded_filename"
+        fi
 
         # 保存配置以记录新路径
         save_config
@@ -266,44 +387,88 @@ generate_strm_files() {
     select_formats
 
     # 第二步：原有参数输入
-    if [ -z "$generated_directory_file" ]; then
-        if ! find_possible_directory_file; then
-            return
+    # 非交互模式：跳过目录文件查找，使用上次配置或参数
+    if [[ "$INTERACTIVE_MODE" == "false" ]]; then
+        # 非交互模式使用配置文件中的 generated_directory_file
+        if [ -z "$generated_directory_file" ]; then
+            # 尝试查找目录文件
+            possible_files=($(ls *_目录文件.txt 2>/dev/null | sort -V | head -1))
+            if [ ${#possible_files[@]} -gt 0 ]; then
+                generated_directory_file="${possible_files[0]}"
+            fi
+        fi
+    else
+        if [ -z "$generated_directory_file" ]; then
+            if ! find_possible_directory_file; then
+                return
+            fi
         fi
     fi
 
-    # 提示用户输入用于保存 .strm 文件的路径
-    if [ -n "$strm_save_path" ]; then
-        echo "请输入 .strm 文件保存的路径，上次配置:${strm_save_path}，回车确认："
+    # 非交互模式：从参数获取配置
+    if [[ "$INTERACTIVE_MODE" == "false" ]]; then
+        strm_save_path="${PARAM_strm_save_path:-$strm_save_path}"
+        alist_url="${PARAM_alist_url:-$alist_url}"
+        mount_path="${PARAM_mount_path:-$mount_path}"
+        exclude_option="${PARAM_exclude_option:-${exclude_option:-2}}"
+        update_existing="${PARAM_update_existing:-${update_existing:-1}}"
+        delete_absent="${PARAM_delete_absent:-${delete_absent:-2}}"
     else
-        echo "请输入 .strm 文件保存的路径："
+        # 提示用户输入用于保存 .strm 文件的路径
+        if [ -n "$strm_save_path" ]; then
+            echo "请输入 .strm 文件保存的路径，上次配置:${strm_save_path}，回车确认："
+        else
+            echo "请输入 .strm 文件保存的路径："
+        fi
+        read -r input_strm_save_path
+        strm_save_path="${input_strm_save_path:-$strm_save_path}"
+
+        # 提示用户输入 alist 的地址加端口
+        if [ -n "$alist_url" ]; then
+            echo "请输入alist的地址+端口（例如：http://abc.com:5244），上次配置:${alist_url}，回车确认："
+        else
+            echo "请输入alist的地址+端口（例如：http://abc.com:5244）："
+        fi
+        read -r input_alist_url
+        alist_url="${input_alist_url:-$alist_url}"
+
+        # 提示用户输入挂载路径信息
+        decoded_mount_path=$(python3 -c "import urllib.parse; print(urllib.parse.unquote('${mount_path}'))")
+        if [ -n "$decoded_mount_path" ]; then
+            echo "请输入alist存储里对应的挂载路径信息，上次配置:${decoded_mount_path}，回车确认："
+        else
+            echo "请输入alist存储里对应的挂载路径信息："
+        fi
+        read -r input_mount_path
+        mount_path="${input_mount_path:-$mount_path}"
+
+        # 提示用户输入剔除选项
+        if [ -n "$exclude_option" ]; then
+            echo "请输入剔除选项（输入要剔除的目录层级数量，默认为2），上次配置:${exclude_option}，回车确认："
+        else
+            echo "请输入剔除选项（输入要剔除的目录层级数量，默认为2）："
+        fi
+        read -r input_exclude_option
+        exclude_option=${input_exclude_option:-2}
+
+        # 提示选择更新还是跳过
+        echo "如果本次要创建的strm文件已存在，请选择更新还是跳过（上次配置: ${update_existing:-1}）：1. 跳过 2. 更新"
+        read -r input_update_existing
+        update_existing="${input_update_existing:-$update_existing}"
+        
+        # 提示选择是否删除
+        echo "如果本次目录中存在本次未创建的strm文件，是否删除（上次配置: ${delete_absent:-2}）：1. 删除 2. 不删除"
+        read -r input_delete_absent
+        delete_absent="${input_delete_absent:-$delete_absent}"
     fi
-    read -r input_strm_save_path
-    strm_save_path="${input_strm_save_path:-$strm_save_path}"
+
+    # 创建保存目录
     mkdir -p "$strm_save_path"
 
-    # 提示用户输入 alist 的地址加端口
-    if [ -n "$alist_url" ]; then
-        echo "请输入alist的地址+端口（例如：http://abc.com:5244），上次配置:${alist_url}，回车确认："
-    else
-        echo "请输入alist的地址+端口（例如：http://abc.com:5244）："
-    fi
-    read -r input_alist_url
-    alist_url="${input_alist_url:-$alist_url}"
     # 确保 URL 的格式正确，以 / 结尾
     if [[ "$alist_url" != */ ]]; then
         alist_url="$alist_url/"
     fi
-
-    # 提示用户输入挂载路径信息
-    decoded_mount_path=$(python3 -c "import urllib.parse; print(urllib.parse.unquote('${mount_path}'))")
-    if [ -n "$decoded_mount_path" ]; then
-        echo "请输入alist存储里对应的挂载路径信息，上次配置:${decoded_mount_path}，回车确认："
-    else
-        echo "请输入alist存储里对应的挂载路径信息："
-    fi
-    read -r input_mount_path
-    mount_path="${input_mount_path:-$mount_path}"
 
     # 处理挂载路径的不同输入情况
     if [[ "$mount_path" == "/" ]]; then
@@ -323,25 +488,7 @@ generate_strm_files() {
     encoded_mount_path=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${mount_path}'))")
 
     # 拼接 URL
-    full_alist_url="${alist_url%/}/d${encoded_mount_path}/"
-
-    # 提示用户输入剔除选项，增加默认值为2
-    if [ -n "$exclude_option" ]; then
-        echo "请输入剔除选项（输入要剔除的目录层级数量，默认为2），上次配置:${exclude_option}，回车确认："
-    else
-        echo "请输入剔除选项（输入要剔除的目录层级数量，默认为2）："
-    fi
-    read -r input_exclude_option
-    exclude_option=${input_exclude_option:-2}
-
-    # 提示选择更新该是跳过
-    echo "如果本次要创建的strm文件已存在，请选择更新还是跳过（上次配置: ${update_existing:-1}）：1. 跳过 2. 更新"
-    read -r input_update_existing
-    update_existing="${input_update_existing:-$update_existing}"
-    # 提示选择更新该是跳过
-    echo "如果本次目录中存在本次未创建的strm文件，是否删除（上次配置: ${delete_absent:-2}）：1. 删除 2. 不删除"
-    read -r input_delete_absent
-    delete_absent="${input_delete_absent:-$delete_absent}"
+    full_alist_url="${alist_url%/}${encoded_mount_path}/"
 
     # 创建临时文件来存储现有的目录结构
     temp_existing_structure=$(mktemp)
@@ -351,6 +498,9 @@ generate_strm_files() {
     find "$strm_save_path" -type f -name "*.strm" >"$temp_existing_structure"
 
     # 使用 Python 生成 .strm 文件并处理多线程与进度显示
+    # 将 bash 数组转换为 Python 列表格式
+    python_extensions=$(printf '"%s",' "${selected_extensions[@]}" | sed 's/,$//')
+    
     python3 - <<EOF
 import os
 import urllib.parse
@@ -362,20 +512,7 @@ update_existing = $update_existing
 delete_absent = $delete_absent
 
 # 使用Bash传递的格式列表
-media_extensions = set(${selected_extensions[@]})
-custom_extensions = set("${custom_extensions}".split())
-media_extensions.update(custom_extensions)
-
-# 定义常见的媒体文件扩展名，并合并用户自定义扩展名
-media_extensions = set([
-    "mp3", "flac", "wav", "aac", "ogg", "wma", "alac", "m4a",
-    "aiff", "ape", "dsf", "dff", "wv", "pcm", "tta",
-    "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "vob", "mpg", "mpeg",
-    "jpg", "jpeg", "png", "gif", "bmp", "tiff", "svg", "heic",
-    "iso", "img", "bin", "nrg", "cue", "dvd",
-    "lrc", "srt", "sub", "ssa", "ass", "vtt", "txt",
-    "pdf", "doc", "docx", "csv", "xml", "new"
-])
+media_extensions = set([${python_extensions}])
 custom_extensions = set("${custom_extensions}".split())
 media_extensions.update(custom_extensions)
 
@@ -385,11 +522,14 @@ alist_url = "$full_alist_url"
 strm_save_path = "$strm_save_path"
 generated_directory_file = "$generated_directory_file"
 
-# 临时文件路径，存放在当前脚本执行目录
-temp_existing_structure = os.path.join("${script_dir}", "existing_structure.txt")
-temp_new_structure = os.path.join("${script_dir}", "new_structure.txt")
-temp_to_create = os.path.join("${script_dir}", "to_create.txt")
-temp_to_delete = os.path.join("${script_dir}", "to_delete.txt")
+# 获取脚本所在目录（从bash传入）
+script_dir = "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 临时文件路径，存放在脚本执行目录
+temp_existing_structure = os.path.join(script_dir, "existing_structure.txt")
+temp_new_structure = os.path.join(script_dir, "new_structure.txt")
+temp_to_create = os.path.join(script_dir, "to_create.txt")
+temp_to_delete = os.path.join(script_dir, "to_delete.txt")
 
 # 获取现有的 .strm 文件目录结构
 def list_existing_files():
@@ -404,8 +544,8 @@ def list_existing_files():
 # 处理生成目录结构
 # 优化后的目录处理函数
 def process_directory_structure():
-    with open("$generated_directory_file", 'r', encoding='utf-8') as file, \
-         open("$temp_new_structure", 'w', encoding='utf-8') as output:
+    with open(generated_directory_file, 'r', encoding='utf-8') as file, \
+         open(temp_new_structure, 'w', encoding='utf-8') as output:
         for line in file:
             line = line.strip()
             if line.count('/') < $exclude_option + 1:
@@ -1233,6 +1373,179 @@ remove_file_extension() {
 
     echo "文件处理完成。"
 }
+
+################# 非交互模式 Action 处理 #################
+# 如果设置了 ACTION 参数，直接执行对应功能并退出
+if [[ -n "$ACTION" && "$INTERACTIVE_MODE" == "false" ]]; then
+    case "$ACTION" in
+        convert)
+            output_msg "开始执行目录树转换..."
+            convert_directory_tree
+            output_msg "目录树转换完成。"
+            ;;
+        strm)
+            output_msg "开始生成 strm 文件..."
+            generate_strm_files
+            output_msg "strm 文件生成完成。"
+            ;;
+        index)
+            output_msg "开始更新索引数据库..."
+            # 从参数获取配置
+            db_file="${PARAM_db_file:-$db_file}"
+            mount_path="${PARAM_mount_path:-$mount_path}"
+            exclude_option="${PARAM_exclude_option:-${exclude_option:-2}}"
+            db_choice="${PARAM_db_choice:-2}"  # 默认替换
+            
+            # 检查必要参数
+            if [[ -z "$db_file" ]]; then
+                output_msg "❌ 缺少数据库文件路径参数 (db_file)"
+                exit 1
+            fi
+            
+            if [[ ! -f "$db_file" ]]; then
+                output_msg "❌ 数据库文件不存在: $db_file"
+                exit 1
+            fi
+            
+            if [[ -z "$mount_path" ]]; then
+                output_msg "❌ 缺少挂载路径参数 (mount_path)"
+                exit 1
+            fi
+            
+            # 查找目录文件
+            if [ -z "$generated_directory_file" ]; then
+                possible_files=($(ls *_目录文件.txt 2>/dev/null | sort -V | head -1))
+                if [ ${#possible_files[@]} -gt 0 ]; then
+                    generated_directory_file="${possible_files[0]}"
+                else
+                    output_msg "❌ 未找到目录文件，请先执行目录树转换"
+                    exit 1
+                fi
+            fi
+            
+            output_msg "📁 目录文件: $generated_directory_file"
+            output_msg "📦 数据库: $db_file"
+            output_msg "📂 挂载路径: $mount_path"
+            output_msg "🔢 剔除层级: $exclude_option"
+            output_msg "⚙️ 操作模式: $([ "$db_choice" == "1" ] && echo '新增' || echo '替换')"
+            
+            # 创建临时数据库
+            temp_db_file=$(mktemp --suffix=.db)
+            
+            # 执行 Python 处理
+            python3 - <<PYEOF
+import sqlite3
+import os
+import time
+
+exclude_option = $exclude_option
+generated_directory_file = "$generated_directory_file"
+mount_path = "$mount_path"
+temp_db_file = "$temp_db_file"
+
+def is_directory(name):
+    return '.' not in name
+
+def insert_data_into_temp_db(file_path, db_path, exclude_level, mount_path):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS x_search_nodes (
+        parent TEXT,
+        name TEXT,
+        is_dir INTEGER,
+        size INTEGER
+    )
+    ''')
+    
+    with open(file_path, 'r', encoding='utf-8') as file:
+        total_lines = sum(1 for _ in file)
+        file.seek(0)
+        valid_lines = total_lines - exclude_level
+        processed_lines = 0
+        
+        for line in file:
+            line = line.rstrip()
+            path_parts = line.split('/')[exclude_level+1:]
+            if len(path_parts) < 1:
+                continue
+            parent = mount_path + '/' + '/'.join(path_parts[:-1])
+            name = path_parts[-1]
+            is_dir = 1 if is_directory(name) else 0
+            cursor.execute('INSERT INTO x_search_nodes (parent, name, is_dir, size) VALUES (?, ?, ?, 0)', (parent, name, is_dir))
+            processed_lines += 1
+    
+    conn.commit()
+    conn.close()
+    print(f"处理完成，共 {processed_lines} 条记录")
+
+insert_data_into_temp_db(generated_directory_file, temp_db_file, exclude_option, mount_path)
+PYEOF
+            
+            # 根据选择执行数据库操作
+            if [[ "$db_choice" == "1" ]]; then
+                # 新增数据
+                sqlite3 "$db_file" <<SQL
+ATTACH DATABASE '$temp_db_file' AS tempdb;
+INSERT INTO main.x_search_nodes (parent, name, is_dir, size)
+SELECT parent, name, is_dir, size FROM tempdb.x_search_nodes;
+DETACH DATABASE tempdb;
+DELETE FROM x_search_nodes 
+WHERE rowid NOT IN (
+    SELECT MIN(rowid)
+    FROM x_search_nodes
+    GROUP BY parent, name
+);
+SQL
+                output_msg "✅ 数据已新增到索引表"
+            else
+                # 替换数据
+                sqlite3 "$db_file" <<SQL
+DELETE FROM x_search_nodes;
+ATTACH DATABASE '$temp_db_file' AS tempdb;
+INSERT INTO main.x_search_nodes (parent, name, is_dir, size)
+SELECT parent, name, is_dir, size FROM tempdb.x_search_nodes;
+DETACH DATABASE tempdb;
+SQL
+                output_msg "✅ 索引表已替换"
+            fi
+            
+            # 创建索引
+            sqlite3 "$db_file" <<SQL
+CREATE INDEX IF NOT EXISTS idx_x_search_nodes_parent ON x_search_nodes (parent);
+SQL
+            
+            rm "$temp_db_file"
+            output_msg "✅ 索引数据库更新完成"
+            
+            # 保存配置
+            save_config
+            ;;
+        auto)
+            output_msg "自动更新脚本功能需要交互模式执行。"
+            ;;
+        config)
+            output_msg "高级配置功能需要交互模式执行。"
+            ;;
+        download)
+            output_msg "下载功能需要交互模式执行。"
+            ;;
+        status)
+            # 输出当前状态
+            output_msg "📈 当前配置状态："
+            output_msg "目录树文件：${directory_tree_file:-未配置}"
+            output_msg "strm 保存路径：${strm_save_path:-未配置}"
+            output_msg "alist 地址：${alist_url:-未配置}"
+            output_msg "挂载路径：${mount_path:-未配置}"
+            output_msg "剔除层级：${exclude_option:-2}"
+            ;;
+        *)
+            output_msg "未知的 action: $ACTION"
+            ;;
+    esac
+    exit 0
+fi
+################# 非交互模式 Action 处理结束 #################
 
 # 主循环，持续显示菜单并处理用户输入
 while true; do
